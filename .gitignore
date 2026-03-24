@@ -7,3 +7,5 @@ build/
 *.db
 .venv/
 venv/
+share/mt5_tls_probe_results.jsonl
+share/mt5_recent_logs*.jsonl
