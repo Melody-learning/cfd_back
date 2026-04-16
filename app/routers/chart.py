@@ -99,14 +99,27 @@ async def get_candles(
 
     target_minutes = TIMEFRAME_MINUTES.get(timeframe.upper(), 1)
 
-    # 如果未指定 from/to，根据 count 自动计算
-    now = int(_time.time())
+    # MT5 /api/chart/get 的 from/to 使用 MT5 服务器时间坐标
+    # 需要将 UTC epoch 加上 server_time_offset_sec 进行校正
+    offset = mt5.server_time_offset_sec
+    now = int(_time.time()) + offset
+
     if to_ts is None:
         to_ts = now
+    else:
+        to_ts = to_ts + offset  # 前端传入的也是 UTC，需校正
+
     if from_ts is None:
         # 多取 20% 的 M1 数据，确保聚合后有足够的蜡烛
         needed_minutes = count * target_minutes
         from_ts = to_ts - (needed_minutes + needed_minutes // 5 + 60) * 60
+    else:
+        from_ts = from_ts + offset  # 前端传入的也是 UTC，需校正
+
+    logger.debug(
+        "K线请求: symbol=%s, tf=%s, offset=%+ds, from=%d, to=%d",
+        symbol, timeframe, offset, from_ts, to_ts,
+    )
 
     # 向 MT5 请求 M1 原始数据
     all_bars = []

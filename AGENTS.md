@@ -151,6 +151,77 @@ share/
 - 更新 `share/api_spec.md`
 - 在 `share/api_changelog.md` 顶部追加记录
 
+## 环境变量参考
+
+完整的环境变量清单（对应 `app/config.py` 中的 `Settings` 类）：
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `MT5_SERVER_HOST` | `43.128.39.163` | MT5 服务器地址 |
+| `MT5_SERVER_PORT` | `443` | MT5 Web API 端口 |
+| `MT5_MANAGER_LOGIN` | `1015` | Manager 账号 |
+| `MT5_MANAGER_PASSWORD` | _(空)_ | Manager 密码 |
+| `MT5_WEBAPI_PASSWORD` | _(空)_ | WebAPI 密码（优先使用） |
+| `MT5_DEMO_GROUP` | `demo\retail` | 新注册用户的 MT5 交易组 |
+| `MT5_INITIAL_BALANCE` | `10000.0` | 新注册用户的初始余额 |
+| `MT5_USE_SSL_VERIFY` | `false` | 是否校验 MT5 SSL 证书 |
+| `JWT_SECRET_KEY` | `dev-secret-key-...` | JWT 签名密钥（生产环境必须更换） |
+| `JWT_ALGORITHM` | `HS256` | JWT 算法 |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | 访问令牌有效期（分钟） |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | `7` | 刷新令牌有效期（天） |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./astralw_gateway.db` | 数据库连接字符串 |
+| `APP_NAME` | `AstralW Gateway` | 应用名称 |
+| `APP_VERSION` | `1.0.0` | 版本号 |
+| `DEBUG` | `true` | 调试模式（控制 SQL 日志输出） |
+
+## Gateway → MT5 端点映射
+
+| Gateway 接口 | MT5 Web API 端点 |
+|---|---|
+| `POST /auth/register` | `GET /api/user/add` + `GET /api/trade/balance` |
+| `POST /auth/login` | `GET /api/user/check_password` |
+| `GET /market/symbols` | `GET /api/symbol/list` |
+| `GET /market/quotes` | `GET /api/tick/last` |
+| `GET /market/tick_stat` | `GET /api/tick/stat` |
+| `WS /market/stream` | `GET /api/tick/last` (500ms 轮询) |
+| `GET /chart/candles` | `GET /api/chart/get` (M1 原始数据) |
+| `POST /trade/open` | `GET /api/tick/last` + `POST /api/dealer/send_request` + `GET /api/dealer/get_request_result` |
+| `POST /trade/close` | `GET /api/position/get_batch` + `POST /api/dealer/send_request` + `GET /api/dealer/get_request_result` |
+| `PUT /trade/modify` | `POST /api/dealer/send_request` + `GET /api/dealer/get_request_result` |
+| `GET /trade/check_margin` | `GET /api/trade/check_margin` |
+| `GET /trade/calc_profit` | `GET /api/user/get` + `GET /api/trade/calc_profit` |
+| `GET /account/info` | `GET /api/user/account/get` |
+| `GET /positions` | `GET /api/position/get_batch` |
+| `GET /orders` | `GET /api/order/get_batch` |
+| `GET /history/deals` | `GET /api/history/get` (type=deal) |
+| `GET /history/orders` | `GET /api/history/get` (type=order) |
+| _(内部) 认证_ | `GET /api/auth/start` + `GET /api/auth/answer` |
+| _(内部) 心跳_ | `GET /api/test/access` |
+| _(内部) 时间校准_ | `GET /api/common/get` |
+
+## 错误码速查
+
+完整的错误码参考请见 [ERROR_CODES.md](ERROR_CODES.md)。
+
+当前已使用的 `error.code` 值：
+
+| error.code | HTTP | 说明 |
+|------------|------|------|
+| `EMAIL_EXISTS` | 409 | 邮箱已注册 |
+| `AUTH_FAILED` | 401 | 邮箱未注册 |
+| `AUTH_INVALID_PASSWORD` | 401 | 密码错误 |
+| `TOKEN_INVALID` | 401 | Token 无效或过期 |
+| `TOKEN_EXPIRED` | 401 | Refresh token 已失效 |
+| `USER_NOT_FOUND` | 401 | 用户不存在 |
+| `MT5_UNAVAILABLE` | 503 | MT5 连接不可用 |
+| `MT5_API_ERROR` | 502 | MT5 API 返回错误 |
+| `MT5_USER_ADD_FAILED` | 502 | 创建 MT5 用户失败 |
+| `INVALID_DIRECTION` | 400 | 交易方向无效 |
+| `QUOTE_UNAVAILABLE` | 502 | 报价不可用 |
+| `TRADE_SUBMIT_FAILED` | 502 | 交易提交失败 |
+| `TRADE_FAILED` | 502 | 交易执行失败 |
+| `POSITION_NOT_FOUND` | 404 | 持仓不存在 |
+
 ## 已知风险点
 
 Agent 在改动以下区域时要格外谨慎：
@@ -172,8 +243,9 @@ pip install -r requirements.txt
 
 启动开发服务：
 
-```bash
-uvicorn app.main:app --reload --port 8000
+```powershell
+cd D:\cfd_back
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 接口文档：
@@ -185,19 +257,17 @@ http://127.0.0.1:8000/docs
 当前测试现状：
 
 - 仓库内暂时没有完整的正式测试体系
-- 现有更多是脚本式验证，不应默认使用 `pytest` 作为主要验证入口
+- 不应默认使用 `pytest` 作为主要验证入口
 
-可用脚本包括：
+`scripts/` 目录下的可用诊断脚本：
 
-- `test_e2e.py`
-- `test_perf.py`
-- `test_mt5_connection.py`
-- `test_mt5_auth.py`
-- `test_v5.py`
+- `scripts/export_mt5_recent_logs.py` — 导出 MT5 近期日志
+- `scripts/mt5_tls_probe.py` — MT5 TLS 连通性探测
+- `scripts/probe_mt5_local.ps1` — 本地 MT5 探测
+- `scripts/probe_mt5_server.ps1` — 远程 MT5 服务器探测
 
 使用这些脚本前，应先确认：
 
-- 服务是否已启动
 - 本地 `.env` 是否配置正确
 - MT5 当前是否可连通
 
@@ -219,7 +289,7 @@ http://127.0.0.1:8000/docs
 
 ## 跨项目协作流程
 
-前端项目路径：`e:\ai-coding-study\astralw_new`
+前端项目路径：`e:\astralw_new`
 
 共享文件：
 

@@ -1,7 +1,63 @@
 # AstralW Gateway - 接口变更记录
 
 > 维护方：后端
-> 最后更新：2026-03-23
+> 最后更新：2026-04-10
+
+---
+
+## [2026-04-10] 挂单功能支持
+
+涉及接口：`POST /api/v1/trade/open`、`GET /api/v1/orders`、`DELETE /api/v1/orders/{ticket}`
+
+### `POST /api/v1/trade/open` — 扩展支持挂单（非 Breaking Change）
+
+新增 3 个可选字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `order_type` | String | 默认 `"MARKET"`。可选: `BUY_LIMIT` / `SELL_LIMIT` / `BUY_STOP` / `SELL_STOP` |
+| `price` | String | 挂单触发价格，挂单类型时必填 |
+| `expiration` | Integer | 到期时间 (Unix 秒)，0=不限期 |
+
+向后兼容：不传 `order_type` 时行为与此前完全一致。
+
+挂单成功时 `retcode` 返回 `"10008"`。
+
+### `GET /api/v1/orders` — **Breaking Change**
+
+| 变更项 | 旧字段 | 新字段 |
+|--------|--------|--------|
+| 订单标识 | `order` (int) | `ticket` (int) |
+| 订单类型 | `type` (int) | `type` (string: `BUY_LIMIT` 等) |
+| 手数 | `lots` (string) | `volume` (string, MT5 内部格式) |
+| 触发价 | `price_order` (string) | `price_open` (string) |
+| 状态 | `state` (int) | 移除 |
+| 新增 | — | `price_current`、`expiration`、`comment` |
+
+前端适配：按新字段名和类型调整解析逻辑。
+
+### `DELETE /api/v1/orders/{ticket}` — 新增端点
+
+取消挂单，路径参数为 MT5 订单 ticket。响应复用 `TradeResult` 格式。
+
+---
+
+## [2026-04-10] Bugfix: K 线时间坐标修正
+
+涉及接口：`GET /api/v1/chart/candles`
+
+**类型：Bugfix（非 Breaking Change）**
+
+问题：蜡烛数据实际返回的是 8 小时前的历史数据，导致 M1 最后一根蜡烛异常巨大（100+ pips）。
+
+修复：后端请求 MT5 时的时间参数已从 UTC 校正为 MT5 服务器时间。
+
+前端影响：
+- **无需修改任何代码**
+- 接口路径、请求参数、返回格式均不变
+- 蜡烛 `timestamp` 坐标系不变（仍为 MT5 服务器时间，与行情 `datetime` 一致）
+- 修复后蜡烛 `close` 将与实时 `bid` 保持一致（差距 <20 pips）
+- 如前端有针对"巨大蜡烛"的本地 workaround，现在可以移除
 
 ---
 

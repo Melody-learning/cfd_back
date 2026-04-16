@@ -1,6 +1,6 @@
 # AstralW Gateway - 接口文档
 
-> 最后更新：2026-03-23
+> 最后更新：2026-04-10
 > Base URL：`http://<server>:8000`
 > Swagger：`http://<server>:8000/docs`
 
@@ -93,11 +93,29 @@ WebSocket 协议：
 
 | 接口 | 方法 | 说明 |
 |---|---|---|
-| `/api/v1/trade/open` | POST | 市价开仓 `{symbol, direction, lots, stop_loss?, take_profit?}` |
+| `/api/v1/trade/open` | POST | 开仓（市价单 / 挂单）`{symbol, direction, lots, stop_loss?, take_profit?, order_type?, price?, expiration?}` |
 | `/api/v1/trade/close` | POST | 平仓 `{position, lots}` |
 | `/api/v1/trade/modify` | PUT | 修改止损止盈 `{position, stop_loss?, take_profit?}` |
 | `/api/v1/trade/check_margin` | GET | 保证金预检 `?symbol&direction&lots` |
 | `/api/v1/trade/calc_profit` | GET | 盈亏试算 `?symbol&direction&lots&price_open&price_close` |
+
+### 挂单字段说明
+
+`POST /api/v1/trade/open` 支持通过可选字段提交挂单：
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `order_type` | String | 否 | 默认 `"MARKET"`。可选值: `MARKET` / `BUY_LIMIT` / `SELL_LIMIT` / `BUY_STOP` / `SELL_STOP` |
+| `price` | String | 挂单必填 | 挂单触发价格。市价单时忽略 |
+| `expiration` | Integer | 否 | 挂单到期时间 (Unix 秒)。`0` 或不传 = 不限期 (GTC) |
+
+向后兼容：不传 `order_type` 时行为与当前完全一致（市价单）。
+
+挂单类型说明：
+- `BUY_LIMIT` — 当价格下跌到指定价时买入
+- `SELL_LIMIT` — 当价格上涨到指定价时卖出
+- `BUY_STOP` — 当价格上涨到指定价时买入
+- `SELL_STOP` — 当价格下跌到指定价时卖出
 
 交易响应：
 
@@ -138,8 +156,66 @@ WebSocket 协议：
 | `/api/v1/account/info` | GET | 账户信息 |
 | `/api/v1/positions` | GET | 当前持仓列表 |
 | `/api/v1/orders` | GET | 当前挂单列表 |
+| `/api/v1/orders/{ticket}` | DELETE | 取消挂单 |
 | `/api/v1/history/deals` | GET | 历史成交 `?from&to` |
 | `/api/v1/history/orders` | GET | 历史订单 `?from&to` |
+
+### `GET /api/v1/orders`
+
+响应格式：
+
+```json
+{
+  "orders": [
+    {
+      "ticket": 12345,
+      "symbol": "EURUSD",
+      "type": "BUY_LIMIT",
+      "volume": "100",
+      "price_open": "1.0820",
+      "stop_loss": "1.0800",
+      "take_profit": "1.0900",
+      "price_current": "1.0835",
+      "time_setup": 1774020638,
+      "expiration": 0,
+      "comment": ""
+    }
+  ]
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `ticket` | Integer | MT5 订单 ticket |
+| `symbol` | String | 品种 |
+| `type` | String | `BUY_LIMIT` / `SELL_LIMIT` / `BUY_STOP` / `SELL_STOP` |
+| `volume` | String | MT5 内部格式 (100 = 0.01 手) |
+| `price_open` | String | 挂单触发价格 |
+| `stop_loss` | String | 止损 |
+| `take_profit` | String | 止盈 |
+| `price_current` | String | 当前市场价 |
+| `time_setup` | Integer | 挂单创建时间 (Unix 秒) |
+| `expiration` | Integer | 到期时间 (Unix 秒, 0=不限期) |
+| `comment` | String | 备注 |
+
+### `DELETE /api/v1/orders/{ticket}`
+
+取消挂单。路径参数 `ticket` 为 MT5 订单 ticket。
+
+响应复用 `TradeResult` 格式：
+
+```json
+{
+  "order": 12345,
+  "deal": 0,
+  "price": "0",
+  "volume": "100",
+  "retcode": "10009",
+  "message": "挂单已取消"
+}
+```
 
 ### `/api/v1/history/deals`
 
@@ -212,3 +288,11 @@ WebSocket 协议：
 | 401 | Token 无效或过期 |
 | 502 | MT5 业务错误 |
 | 503 | MT5 不可用，建议重试 1 到 2 次，间隔 2 秒 |
+
+---
+
+## 待实现
+
+_当前无待实现项目。_
+
+

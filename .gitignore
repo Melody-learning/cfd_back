@@ -7,5 +7,16 @@ build/
 *.db
 .venv/
 venv/
+tools/
 share/mt5_tls_probe_results.jsonl
 share/mt5_recent_logs*.jsonl
+
+# 运行时日志
+logs/
+uvicorn.out.log
+uvicorn.err.log
+
+# AI Agent 工作目录与 OpenSpec 文档
+.codex/
+.agent/
+openspec/

@@ -182,9 +182,10 @@ class MT5Connector:
         try:
             resp = await self._client.get("/api/common/get")
             data = resp.json()
-            server_time = int(data.get("answer", {}).get("TradeServerTimeMSec", 0)) // 1000
+            answer = data.get("answer", {})
+            server_time = int(answer.get("TradeServerTimeMSec", 0)) // 1000
             if server_time == 0:
-                server_time = int(data.get("answer", {}).get("Time", 0))
+                server_time = int(answer.get("Time", 0))
             if server_time > 0:
                 utc_now = int(time.time())
                 self.server_time_offset_sec = server_time - utc_now
@@ -194,9 +195,32 @@ class MT5Connector:
                     self.server_time_offset_sec / 3600,
                 )
             else:
-                logger.warning("MT5 服务器时间获取失败，使用默认 offset=0")
+                # /api/common/get 未返回有效时间，尝试从 tick 推算
+                logger.debug("common/get 未返回有效时间 (answer keys: %s)，尝试从 tick 推算", list(answer.keys()))
+                await self._detect_offset_from_tick()
         except Exception as e:
             logger.warning("检测服务器时间偏移失败: %s", e)
+
+    async def _detect_offset_from_tick(self) -> None:
+        """从 tick datetime 推算服务器时间偏移（备用方案）"""
+        try:
+            resp = await self._client.get("/api/tick/last", params={"symbol": "EURUSD"})
+            data = resp.json()
+            ticks = data.get("answer", [])
+            if isinstance(ticks, list) and ticks:
+                tick_time = int(ticks[0].get("Datetime", 0))
+                if tick_time > 0:
+                    utc_now = int(time.time())
+                    self.server_time_offset_sec = tick_time - utc_now
+                    logger.info(
+                        "MT5 时间偏移 (tick fallback): tick_time=%d, utc=%d, offset=%+d秒 (%+.1f小时)",
+                        tick_time, utc_now, self.server_time_offset_sec,
+                        self.server_time_offset_sec / 3600,
+                    )
+                    return
+            logger.warning("tick fallback 也未能获取时间，使用默认 offset=0")
+        except Exception as e:
+            logger.warning("tick fallback 检测失败: %s, 使用默认 offset=0", e)
 
     # ──────────────────── Ping 心跳 ────────────────────
 

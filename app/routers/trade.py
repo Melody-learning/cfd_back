@@ -22,6 +22,17 @@ router = APIRouter(prefix="/api/v1/trade", tags=["交易"])
 
 DIRECTION_MAP = {"BUY": 0, "SELL": 1}
 
+# 挂单类型到 MT5 Type 的映射
+ORDER_TYPE_MAP = {
+    "BUY_LIMIT": 2,
+    "SELL_LIMIT": 3,
+    "BUY_STOP": 4,
+    "SELL_STOP": 5,
+}
+
+# 挂单类型集合，用于快速判断
+PENDING_TYPES = set(ORDER_TYPE_MAP.keys())
+
 
 def _lots_to_volume(lots: str) -> int:
     """Convert lots to MT5 Volume, where 100 = 0.01 lot."""
@@ -122,34 +133,62 @@ async def trade_open(
     req: TradeOpenRequest,
     user: User = Depends(get_current_user),
 ):
-    """Open a market order."""
+    """Open a market or pending order."""
     mt5 = get_mt5()
-    direction = req.direction.upper()
-    order_type = DIRECTION_MAP.get(direction)
-    if order_type is None:
+    raw_order_type = (req.order_type or "MARKET").upper()
+    is_pending = raw_order_type in PENDING_TYPES
+
+    # ── 挂单参数校验 ──
+    if is_pending and not req.price:
         raise HTTPException(
             status_code=400,
-            detail={"error": {"code": "INVALID_DIRECTION", "message": "direction 必须是 BUY 或 SELL"}},
+            detail={"error": {"code": "MISSING_PRICE", "message": "挂单类型必须提供 price 字段"}},
         )
 
-    price_order, digits = await _get_market_execution_price(mt5, req.symbol, direction)
+    # ── 确定 MT5 Type 和方向 ──
+    if is_pending:
+        mt5_type = ORDER_TYPE_MAP[raw_order_type]
+        # 从挂单类型推断买卖方向
+        direction = "BUY" if raw_order_type in {"BUY_LIMIT", "BUY_STOP"} else "SELL"
+    else:
+        direction = req.direction.upper()
+        mt5_type = DIRECTION_MAP.get(direction)
+        if mt5_type is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"code": "INVALID_DIRECTION", "message": "direction 必须是 BUY 或 SELL"}},
+            )
+
+    # ── 确定价格 ──
+    if is_pending:
+        price_order = req.price
+        digits = _count_price_digits(price_order)
+    else:
+        price_order, digits = await _get_market_execution_price(mt5, req.symbol, direction)
 
     trade_body = {
         "Action": "200",
         "Login": str(user.mt5_login),
         "Symbol": req.symbol,
-        "Type": str(order_type),
+        "Type": str(mt5_type),
         "Volume": str(_lots_to_volume(req.lots)),
         "VolumeExt": str(_lots_to_volume_ext(req.lots)),
         "TypeFill": "2",
         "PriceOrder": price_order,
         "Digits": str(digits),
-        "PriceDeviation": "100",
     }
+    # 市价单才需要 PriceDeviation
+    if not is_pending:
+        trade_body["PriceDeviation"] = "100"
+    # 挂单到期时间
+    if is_pending and req.expiration and req.expiration > 0:
+        trade_body["Expiration"] = str(req.expiration)
     if req.stop_loss:
         trade_body["PriceSL"] = req.stop_loss
     if req.take_profit:
         trade_body["PriceTP"] = req.take_profit
+
+    success_msg = "挂单成功" if is_pending else "成交成功"
 
     try:
         resp = await mt5.post("/api/dealer/send_request", body=trade_body)
@@ -169,7 +208,7 @@ async def trade_open(
                 price=str(result.get("Price", result.get("ResultPrice", ""))),
                 volume=str(result.get("Volume", result.get("ResultVolume", ""))),
                 retcode=str(result.get("Retcode", result.get("ResultRetcode", "0"))),
-                message="成交成功",
+                message=success_msg,
             )
 
         return TradeResult(

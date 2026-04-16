@@ -1,13 +1,22 @@
 """账户与持仓路由。"""
 import logging
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from app.models.user import User
-from app.mt5.connector import get_mt5
+from app.mt5.connector import MT5APIError, MT5ConnectionError, get_mt5
+from app.schemas.trade import TradeResult
 from app.services.jwt_service import get_current_user
 
 logger = logging.getLogger(__name__)
+
+# MT5 订单 Type 值到前端字符串的反向映射
+ORDER_TYPE_REVERSE_MAP = {
+    2: "BUY_LIMIT",
+    3: "SELL_LIMIT",
+    4: "BUY_STOP",
+    5: "SELL_STOP",
+}
 
 router = APIRouter(prefix="/api/v1", tags=["账户"])
 
@@ -113,19 +122,93 @@ async def get_orders(
     answer = data.get("answer", [])
     orders = []
     if isinstance(answer, list):
+        # 收集所有品种，批量获取当前价格
+        symbols = {order.get("Symbol", "") for order in answer if order.get("Symbol")}
+        current_prices: dict[str, str] = {}
+        if symbols:
+            try:
+                tick_data = await mt5.get(
+                    "/api/tick/last",
+                    params={"symbol": ",".join(symbols)},
+                )
+                for tick in tick_data.get("answer", []):
+                    sym = tick.get("Symbol", "")
+                    # 使用 Bid 作为当前市场参考价
+                    current_prices[sym] = str(tick.get("Bid", "0"))
+            except Exception:
+                logger.warning("获取当前价格失败，price_current 将返回 0")
+
         for order in answer:
+            raw_type = int(order.get("Type", 0))
+            symbol = order.get("Symbol", "")
             orders.append({
-                "order": int(order.get("Order", 0)),
-                "symbol": order.get("Symbol", ""),
-                "type": int(order.get("Type", 0)),
-                "lots": str(int(order.get("VolumeInitial", 0)) / 10000),
-                "price_order": str(order.get("PriceOrder", "0")),
+                "ticket": int(order.get("Order", 0)),
+                "symbol": symbol,
+                "type": ORDER_TYPE_REVERSE_MAP.get(raw_type, str(raw_type)),
+                "volume": str(order.get("VolumeInitial", "0")),
+                "price_open": str(order.get("PriceOrder", "0")),
                 "stop_loss": str(order.get("PriceSL", "0")),
                 "take_profit": str(order.get("PriceTP", "0")),
+                "price_current": current_prices.get(symbol, "0"),
                 "time_setup": int(order.get("TimeSetup", 0)),
-                "state": int(order.get("State", 0)),
+                "expiration": int(order.get("Expiration", 0) or 0),
+                "comment": order.get("Comment", ""),
             })
     return {"orders": orders}
+
+
+@router.delete("/orders/{ticket}", response_model=TradeResult)
+async def cancel_order(
+    ticket: int = Path(description="MT5 订单 ticket"),
+    user: User = Depends(get_current_user),
+):
+    """取消挂单。"""
+    from app.routers.trade import _poll_trade_result, _safe_int
+
+    mt5 = get_mt5()
+
+    trade_body = {
+        "Action": "201",
+        "Login": str(user.mt5_login),
+        "Order": str(ticket),
+    }
+
+    try:
+        resp = await mt5.post("/api/dealer/send_request", body=trade_body)
+        answer = resp.get("answer", {})
+        request_id = str(answer.get("id", answer.get("ID", "")))
+        if not request_id:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": {"code": "TRADE_SUBMIT_FAILED", "message": "未获取到请求 ID"}},
+            )
+
+        result = await _poll_trade_result(mt5, request_id)
+        if result:
+            return TradeResult(
+                order=_safe_int(result.get("OrderID", result.get("ResultOrder", 0))),
+                deal=_safe_int(result.get("DealID", result.get("ResultDeal", 0))),
+                price=str(result.get("Price", result.get("ResultPrice", "0"))),
+                volume=str(result.get("Volume", result.get("ResultVolume", ""))),
+                retcode=str(result.get("Retcode", result.get("ResultRetcode", "0"))),
+                message="挂单已取消",
+            )
+
+        return TradeResult(
+            order=ticket,
+            deal=0,
+            price="0",
+            volume="",
+            retcode="0",
+            message=f"取消请求已提交，等待执行 (request_id={request_id})",
+        )
+    except MT5ConnectionError:
+        raise HTTPException(status_code=503, detail={"error": {"code": "MT5_UNAVAILABLE", "message": "MT5 服务不可用"}})
+    except MT5APIError as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": {"code": "TRADE_FAILED", "message": str(e), "mt5_retcode": e.retcode}},
+        )
 
 
 @router.get("/history/deals")
