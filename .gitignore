@@ -16,6 +16,9 @@ logs/
 uvicorn.out.log
 uvicorn.err.log
 
+# MT5 API 参考文档（仅本地使用）
+MT5_web_api_docs/
+
 # AI Agent 工作目录与 OpenSpec 文档
 .codex/
 .agent/
